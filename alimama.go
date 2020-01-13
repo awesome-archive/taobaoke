@@ -6,10 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -164,47 +164,58 @@ func BrowserLogin() string {
 	// 创建内容
 	ctxt, cancel = context.WithCancel(context.Background())
 	//defer cancel()
-	var userdatadir runner.CommandLineOption
 	if len(ChromeUserDataDIR) > 0 {
-		userdatadir = runner.Flag("user-data-dir", ChromeUserDataDIR)
+		c, err = chromedp.New(ctxt, chromedp.WithRunnerOptions(
+			runner.Flag("headless", true),
+			runner.Flag("disable-gpu", true),
+			runner.Flag("no-first-run", true),
+			runner.Flag("no-sandbox", true),
+			runner.Flag("no-default-browser-check", true),
+			// runner.Flag("disable-popup-blocking", false),                                 //关闭弹窗拦截
+			// runner.Flag("disable-web-security", true),                                    //安全策略 跨域之类
+			runner.Flag("user-data-dir", ChromeUserDataDIR),
+		), chromedp.WithLog(BrowserHandler))
+	} else {
+		c, err = chromedp.New(ctxt, chromedp.WithRunnerOptions(
+			runner.Flag("headless", true),
+			runner.Flag("disable-gpu", true),
+			runner.Flag("no-first-run", true),
+			runner.Flag("no-sandbox", true),
+			runner.Flag("no-default-browser-check", true),
+			// runner.Flag("disable-popup-blocking", false),                                 //关闭弹窗拦截
+			// runner.Flag("disable-web-security", true),                                    //安全策略 跨域之类
+		), chromedp.WithLog(BrowserHandler))
 	}
 	// 创建chrome实例
-	c, err = chromedp.New(ctxt, chromedp.WithRunnerOptions(
-		// runner.Flag("headless", true),
-		runner.Flag("disable-gpu", true),
-		runner.Flag("no-first-run", true),
-		runner.Flag("no-sandbox", true),
-		runner.Flag("no-default-browser-check", true),
-		// runner.Flag("disable-popup-blocking", false),                                 //关闭弹窗拦截
-		// runner.Flag("disable-web-security", true),                                    //安全策略 跨域之类
-		userdatadir, //安全策略 跨域之类
-		runner.StartURL(`https://www.alimama.com/member/login.htm?forward=http%3A%2F%2Fpub.alimama.com%2Fmyunion.htm%3Fspm%3Da219t.7900221%2F1.a214tr8.2.446dfb5b8vg0Sx`),
-	), chromedp.WithLog(BrowserHandler))
+
 	if err != nil {
 		log.Fatal("chromedp.New", err)
 	}
 
 	// 运行任务
-
-	err = c.Run(ctxt, getQrcode())
+	var img string
+	err = c.Run(ctxt, getQrcode(&img))
 	if err != nil {
 		log.Fatal("getQrcode", err)
 	}
-	imgbyte, _ := ioutil.ReadFile("123.png")
 	browserRun = 1
-	return base64.StdEncoding.EncodeToString(imgbyte)
+	log.Println("输出测试 ", img)
+	return img
 }
 func BrowserHandler(a string, b ...interface{}) {
 	log.Printf(a, b...)
-	data := gjson.Parse(b[0].(string))
-	if "Runtime.executionContextCreated" == data.Get("method").String() {
-		conTextMap[data.Get("params").Get("context").Get("auxData").Get("frameId").String()] = data.Get("params").Get("context").Get("id").Int()
+	if len(b) >= 1 && reflect.TypeOf(b[0]).String() == "string" {
+		data := gjson.Parse(b[0].(string))
+		if "Runtime.executionContextCreated" == data.Get("method").String() {
+			conTextMap[data.Get("params").Get("context").Get("auxData").Get("frameId").String()] = data.Get("params").Get("context").Get("id").Int()
+		}
 	}
 
 }
-func getQrcode() chromedp.Tasks {
-	var img []byte
+func getQrcode(img *string) chromedp.Tasks {
+
 	return chromedp.Tasks{
+		chromedp.Navigate(`https://www.alimama.com/member/login.htm?forward=http%3A%2F%2Fpub.alimama.com%2Fmyunion.htm%3Fspm%3Da219t.7900221%2F1.a214tr8.2.446dfb5b8vg0Sx`),
 		chromedp.WaitVisible(`.mm-logo`, chromedp.ByQuery),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.ActionFunc(func(z context.Context, h cdp.Executor) error {
@@ -224,13 +235,14 @@ func getQrcode() chromedp.Tasks {
 					}
 					res, _, err := runtime.Evaluate(`
 							function test (){
+								document.querySelector("#J_LoginBox") && document.querySelector("#J_LoginBox").className && document.querySelector("#J_LoginBox").className.indexOf("module-quick") == -1 && (document.querySelector(".login-switch .quick").click());
 								if (!document.querySelector("#J_QRCodeImg img")){return 0}
 								if (document.querySelector("#J_QRCodeImg img").naturalWidth==0){return 0}
 								if (document.querySelector("#J_QRCodeImg img").naturalHeight==0){return 0}
 								if (document.querySelector("#J_QRCodeImg img").width==0){return 0}
 								if (document.querySelector("#J_QRCodeImg img").height==0){return 0}
 								var img = document.querySelector("#J_QRCodeImg img");
-								return '{"width":'+img.width+',"height":'+img.height+'}'
+								return '{"width":'+img.width+',"height":'+img.height+',"src":"'+img.src+'"}'
 							}
 							test()
 						`).WithContextID(runtime.ExecutionContextID(cid)).Do(z, h)
@@ -242,6 +254,7 @@ func getQrcode() chromedp.Tasks {
 						continue
 					}
 					//
+					*img = string(res.Value)
 					log.Println("二维码输出成功", string(res.Value), v.Frame.Name)
 					goto ForEnd
 				}
@@ -249,10 +262,6 @@ func getQrcode() chromedp.Tasks {
 			}
 		ForEnd:
 			return nil
-		}),
-		chromedp.Screenshot(".panel iframe[name='taobaoLoginIfr']", &img, chromedp.ByQuery),
-		chromedp.ActionFunc(func(z context.Context, h cdp.Executor) error {
-			return ioutil.WriteFile("123.png", img, 0644)
 		}),
 	}
 }
